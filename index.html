@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>PLY自己位置推定 | iPhone用</title>
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="stylesheet" href="./style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<header class="app-header">
+  <div>
+    <h1>📍 PLY自己位置推定</h1>
+    <p class="sub">PLY点群 × iPhoneカメラ — 地面(YZ平面)の位置＋向きを推定</p>
+  </div>
+  <button id="btnHelp" class="ghost">使い方</button>
+</header>
+
+<div id="helpModal" class="modal hidden">
+  <div class="modal-card">
+    <h2>使い方（iPhone / HTTPS必須）</h2>
+    <ol>
+      <li>① <b>PLYを読込</b>（点群ファイルを選択。無ければ「デモ点群」で試せます）</li>
+      <li>② <b>センサー許可</b> → <b>カメラ開始</b> の順に押す</li>
+      <li>③ <b>ライブ画面</b>にカメラ＋点群が重なります。点群が現実と重なるよう <b>十字キーで移動／左右旋回</b> で合わせます</li>
+      <li>④ 合ったら <b>上から見た図</b> に自分の位置（●）と向き（▲矢印）が表示されます</li>
+      <li>⑤ 歩くときは <b>歩行連動ON</b> で自動前進、<b>コンパス連動ON</b> で向き自動追従</li>
+    </ol>
+    <p class="note">※ GitHub Pagesは必ず <code>https://</code> で開いてください（カメラ・コンパスに必須）。<br>
+    ※ 地面＝<b>YZ平面（Xが上）</b>が初期設定。普通のPLY（Yが上）の場合は設定でXZに切替。</p>
+    <button id="btnCloseHelp" class="primary">閉じる</button>
+  </div>
+</div>
+
+<main>
+  <!-- 設定 -->
+  <section class="card">
+    <h2>1. PLYとセンサー</h2>
+    <div class="row wrap">
+      <label class="file-btn">📂 PLYを選択<input id="filePly" type="file" accept=".ply" hidden /></label>
+      <button id="btnDemo">🧪 デモ点群</button>
+      <button id="btnSensor" class="primary">📡 センサー許可</button>
+      <button id="btnCamera">🎥 カメラ開始</button>
+    </div>
+    <div class="row wrap">
+      <label>地面の定義
+        <select id="selAxis">
+          <option value="YZ" selected>YZ平面（Xが上）</option>
+          <option value="XZ">XZ平面（Yが上・一般的）</option>
+        </select>
+      </label>
+      <label>目線の高さ <span id="heightVal">1.4m</span>
+        <input id="rngHeight" type="range" min="0.5" max="3" step="0.05" value="1.4" />
+      </label>
+      <label>画角FOV <span id="fovVal">62°</span>
+        <input id="rngFov" type="range" min="40" max="90" step="1" value="62" />
+      </label>
+    </div>
+    <div class="row wrap toggles">
+      <label><input id="chkCompass" type="checkbox" checked /> コンパス連動（向き）</label>
+      <label><input id="chkGyro" type="checkbox" checked /> ジャイロ連動（傾き）</label>
+      <label><input id="chkStep" type="checkbox" /> 歩行連動（前進）</label>
+    </div>
+    <div class="row wrap">
+      <label>歩幅 <span id="stepVal">0.60m</span>
+        <input id="rngStep" type="range" min="0.3" max="1" step="0.05" value="0.6" />
+      </label>
+      <button id="btnNorth" class="ghost">🧭 今向きを北に</button>
+      <button id="btnExportMap" class="ghost">🗺 上面図を保存</button>
+    </div>
+    <p id="statusLine" class="status">待機中：PLYを選択してください</p>
+    <p class="pose-line">位置 <code id="poseText">u=—, v=—</code> ／ 向き <code id="yawText">—°</code> ／ コンパス <code id="compassText">—</code></p>
+  </section>
+
+  <!-- ライブ -->
+  <section class="card">
+    <h2>2. ライブ（カメラ＋点群の重ね合わせ）</h2>
+    <div class="view-tabs">
+      <button id="tabLive" class="tab active">ライブ</button>
+      <button id="tabMap" class="tab">上面図のみ大表示</button>
+    </div>
+    <div id="liveWrap" class="live-wrap">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+      <div class="live-hud">
+        <span id="hudYaw"> yaw — </span>
+        <input id="rngOpacity" type="range" min="0.1" max="1" step="0.05" value="0.9" title="点群の濃さ" />
+      </div>
+      <div class="pitch-row">
+        <label>俯仰 <input id="rngPitch" type="range" min="-60" max="60" step="1" value="0" /></label>
+        <span id="pitchVal">0°</span>
+      </div>
+    </div>
+
+    <!-- 移動コントロール -->
+    <div class="pad-grid">
+      <span></span><button data-move="fwd" class="pad">▲前</button><span></span>
+      <button data-yaw="left" class="pad">⟲ 左</button><button data-move="back" class="pad">▼後</button><button data-yaw="right" class="pad">右 ⟳</button>
+      <button data-move="left" class="pad">◀左</button><button data-yaw="fine-left" class="pad small">−1°</button><button data-yaw="fine-right" class="pad small">＋1°</button><button data-move="right" class="pad">右▶</button>
+    </div>
+    <p class="hint">合わせ方：遠くの壁・柱・角がカメラ映像と点（緑〜赤）にピタッと重なるまで移動・旋回。1マス <span id="stepGridVal">0.2m</span> / 長押しで連続移動</p>
+    <div class="row wrap">
+      <label>1回移動量 <input id="rngGrid" type="range" min="0.05" max="1" step="0.05" value="0.2" /></label>
+      <button id="btnResetPose" class="ghost">位置リセット</button>
+    </div>
+  </section>
+
+  <!-- 上面図 -->
+  <section class="card">
+    <h2>3. 上から見た図（PLYから生成＋自分の位置・向き）</h2>
+    <canvas id="topmap" width="800" height="800"></canvas>
+    <p class="hint">タップで位置を指定できます。●＝自分、赤矢印＝向き（yaw）。背景はPLY上面投影（色＝高さ）。グリッド1m。</p>
+  </section>
+</main>
+
+<footer><p>static site · GitHub Pages OK · <code>?ply=URL</code> で直接読込可</p></footer>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
